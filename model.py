@@ -39,7 +39,7 @@ class DCGAN(object):
     self.is_grayscale = (c_dim == 1)
 
     self.batch_size = batch_size
-    self.sample_num = sample_num
+    self.sample_num = batch_size
 
     self.input_height = input_height
     self.input_width = input_width
