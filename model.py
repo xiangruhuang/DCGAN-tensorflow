@@ -39,7 +39,7 @@ class DCGAN(object):
     self.is_grayscale = (c_dim == 1)
 
     self.batch_size = batch_size
-    self.sample_num = batch_size
+    self.sample_num = batch_size 
 
     self.input_height = input_height
     self.input_width = input_width
@@ -355,12 +355,12 @@ class DCGAN(object):
           if config.dataset == 'mnist':
             samples = self.sess.run(
               self.sampler,
-              feed_dict={
+                feed_dict={
                   self.z: sample_z,
                   self.inputs: sample_inputs,
                   self.y:sample_labels,
-              }
-            )
+                })
+            samples = samples[:64]
             save_images(samples, [8, 8],
                     './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
             #print("[Sample] loss: %.8f" % (average_loss/float(loss_count))) 
