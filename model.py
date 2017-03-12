@@ -6,6 +6,7 @@ from glob import glob
 import tensorflow as tf
 import numpy as np
 from six.moves import xrange
+import numpy
 
 from ops import *
 from utils import *
@@ -18,7 +19,8 @@ class DCGAN(object):
          batch_size=64, sample_num = 64, output_height=64, output_width=64,
          y_dim=None, z_dim=100, gf_dim=64, df_dim=64,
          gfc_dim=1024, dfc_dim=1024, c_dim=3, dataset_name='default',
-         input_fname_pattern='*.jpg', checkpoint_dir=None, sample_dir=None):
+         input_fname_pattern='*.jpg', checkpoint_dir=None, sample_dir=None, 
+         approx_dim=None):
     """
 
     Args:
@@ -54,11 +56,11 @@ class DCGAN(object):
     self.dfc_dim = dfc_dim
 
     self.c_dim = c_dim
+    self.num_proj = approx_dim
 
     # batch normalization : deals with poor initialization helps gradient flow
     self.d_bn1 = batch_norm(name='d_bn1')
     self.d_bn2 = batch_norm(name='d_bn2')
-
     if not self.y_dim:
       self.d_bn3 = batch_norm(name='d_bn3')
 
@@ -94,46 +96,76 @@ class DCGAN(object):
     self.z = tf.placeholder(
       tf.float32, [None, self.z_dim], name='z')
     self.z_sum = histogram_summary("z", self.z)
+    
+    """random projection"""
+    self.proj_gen = tf.random_normal(
+        shape=[self.num_proj] + image_dims, dtype=tf.float32)
+    self.random_proj = tf.placeholder(
+        shape=[self.num_proj] + image_dims, dtype=tf.float32)
+
+    """Of shape [h,w,c]*num_proj"""
+    self.projs = tf.unstack(self.random_proj)
+    #self.random_proj = tf.Print(self.random_proj, [tf.reduce_sum(p) for p in self.random_proj], 'random_projs_sum', summarize=1000)
+    self.normal_projs = [proj/tf.global_norm([proj]) for proj in self.projs]
 
     if self.y_dim:
       self.G = self.generator(self.z, self.y)
-      self.D, self.D_logits = \
-          self.discriminator(inputs, self.y, reuse=False)
+      #self.D, self.D_logits = \
+      #    self.discriminator(inputs, self.y, reuse=False)
 
       self.sampler = self.sampler(self.z, self.y)
-      self.D_, self.D_logits_ = \
-          self.discriminator(self.G, self.y, reuse=True)
+      #self.D_, self.D_logits_ = \
+      #    self.discriminator(self.G, self.y, reuse=True)
     else:
       self.G = self.generator(self.z)
-      self.D, self.D_logits = self.discriminator(inputs)
+      #self.D, self.D_logits = self.discriminator(inputs)
 
       self.sampler = self.sampler(self.z)
-      self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
+      #self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
+   
+    def projections(list_a, list_b):
+        ans = []
+        flat_a = tf.unstack(list_a)
+        for b in list_b:
+            ans_b = [tf.reduce_sum(tf.multiply(a, b)) for a in flat_a]
+            ans.append(ans_b)
+        return tf.convert_to_tensor(ans)
 
-    self.d_sum = histogram_summary("d", self.D)
-    self.d__sum = histogram_summary("d_", self.D_)
+    self.projs_1D_generated = projections(self.G, self.normal_projs)
+    self.projs_1D_real = projections(self.inputs, self.normal_projs)
+
+    self.gather_indices = tf.placeholder(shape=[self.num_proj, self.batch_size], dtype=tf.int64)
+
+    self.permuted_projs_1D_real = [tf.gather(proj, indices) for (proj, indices)
+            in zip(tf.unstack(self.projs_1D_real), tf.unstack(self.gather_indices))]
+    #self.permuted_projs_1D_real = tf.convert_to_tensor(self.permuted_projs_1D_real)
+    #self.projs_1D_generated = tf.convert_to_tensor(self.projs_1D_generated)
+    self.loss = tf.nn.l2_loss(self.permuted_projs_1D_real - self.projs_1D_generated)
+
+    #self.d_sum = histogram_summary("d", self.D)
+    #self.d__sum = histogram_summary("d_", self.D_)
     self.G_sum = image_summary("G", self.G)
 
-    def sigmoid_cross_entropy_with_logits(x, y):
-      try:
-        return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, labels=y)
-      except:
-        return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, targets=y)
+    #def sigmoid_cross_entropy_with_logits(x, y):
+    #  try:
+    #    return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, labels=y)
+    #  except:
+    #    return tf.nn.sigmoid_cross_entropy_with_logits(logits=x, targets=y)
 
-    self.d_loss_real = tf.reduce_mean(
-      sigmoid_cross_entropy_with_logits(self.D_logits, tf.ones_like(self.D)))
-    self.d_loss_fake = tf.reduce_mean(
-      sigmoid_cross_entropy_with_logits(self.D_logits_, tf.zeros_like(self.D_)))
-    self.g_loss = tf.reduce_mean(
-      sigmoid_cross_entropy_with_logits(self.D_logits_, tf.ones_like(self.D_)))
+    #self.d_loss_real = tf.reduce_mean(
+    #  sigmoid_cross_entropy_with_logits(self.D_logits, tf.ones_like(self.D)))
+    #self.d_loss_fake = tf.reduce_mean(
+    #  sigmoid_cross_entropy_with_logits(self.D_logits_, tf.zeros_like(self.D_)))
+    #self.g_loss = tf.reduce_mean(
+    #  sigmoid_cross_entropy_with_logits(self.D_logits_, tf.ones_like(self.D_)))
 
-    self.d_loss_real_sum = scalar_summary("d_loss_real", self.d_loss_real)
-    self.d_loss_fake_sum = scalar_summary("d_loss_fake", self.d_loss_fake)
+    #self.d_loss_real_sum = scalar_summary("d_loss_real", self.d_loss_real)
+    #self.d_loss_fake_sum = scalar_summary("d_loss_fake", self.d_loss_fake)
                           
-    self.d_loss = self.d_loss_real + self.d_loss_fake
+    #self.d_loss = self.d_loss_real + self.d_loss_fake
 
-    self.g_loss_sum = scalar_summary("g_loss", self.g_loss)
-    self.d_loss_sum = scalar_summary("d_loss", self.d_loss)
+    #self.g_loss_sum = scalar_summary("g_loss", self.g_loss)
+    #self.d_loss_sum = scalar_summary("d_loss", self.d_loss)
 
     t_vars = tf.trainable_variables()
 
@@ -150,20 +182,20 @@ class DCGAN(object):
       data = glob(os.path.join("./data", config.dataset, self.input_fname_pattern))
     #np.random.shuffle(data)
 
-    d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
-              .minimize(self.d_loss, var_list=self.d_vars)
+    #d_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
+    #          .minimize(self.d_loss, var_list=self.d_vars)
     g_optim = tf.train.AdamOptimizer(config.learning_rate, beta1=config.beta1) \
-              .minimize(self.g_loss, var_list=self.g_vars)
+              .minimize(self.loss)
     try:
       tf.global_variables_initializer().run()
     except:
       tf.initialize_all_variables().run()
 
-    self.g_sum = merge_summary([self.z_sum, self.d__sum,
-      self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
-    self.d_sum = merge_summary(
-        [self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
-    self.writer = SummaryWriter("./logs", self.sess.graph)
+    #self.g_sum = merge_summary([self.z_sum, self.d__sum,
+    #  self.G_sum, self.d_loss_fake_sum, self.g_loss_sum])
+    #self.d_sum = merge_summary(
+    #    [self.z_sum, self.d_sum, self.d_loss_real_sum, self.d_loss_sum])
+    #self.writer = SummaryWriter("./logs", self.sess.graph)
 
     sample_z = np.random.uniform(-1, 1, size=(self.sample_num , self.z_dim))
     
@@ -185,7 +217,7 @@ class DCGAN(object):
       else:
         sample_inputs = np.array(sample).astype(np.float32)
   
-    counter = 1
+    counter = 0
     start_time = time.time()
 
     if self.load(self.checkpoint_dir):
@@ -201,6 +233,8 @@ class DCGAN(object):
           "./data", config.dataset, self.input_fname_pattern))
         batch_idxs = min(len(data), config.train_size) // config.batch_size
 
+      average_loss = 0.0
+      loss_count = 0
       for idx in xrange(0, batch_idxs):
         if config.dataset == 'mnist':
           batch_images = data_X[idx*config.batch_size:(idx+1)*config.batch_size]
@@ -225,39 +259,73 @@ class DCGAN(object):
 
         if config.dataset == 'mnist':
           # Update D network
-          _, summary_str = self.sess.run([d_optim, self.d_sum],
-            feed_dict={ 
-              self.inputs: batch_images,
+          #_, summary_str = self.sess.run([d_optim, self.d_sum],
+          #  feed_dict={ 
+          #    self.inputs: batch_images,
+          #    self.z: batch_z,
+          #    self.y:batch_labels,
+          #  })
+          #self.writer.add_summary(summary_str, counter)
+          
+          random_proj = self.sess.run(self.proj_gen)
+          g, r = self.sess.run([self.projs_1D_generated, self.projs_1D_real],
+            feed_dict={
+              self.inputs:batch_images,
               self.z: batch_z,
-              self.y:batch_labels,
-            })
-          self.writer.add_summary(summary_str, counter)
+              self.y: batch_labels,
+              self.random_proj:random_proj
+                })
+          
+          gather_indices = []
+          for (g_i, r_i) in zip(g, r):
+              index_g = sorted(range(len(g_i)), key=lambda x:g_i[x])
+              index_r = sorted(range(len(r_i)), key=lambda x:r_i[x])
+              gather_indices_i = [i for i in range(len(r_i))]
+              for ir, ig in zip(index_r, index_g):
+                  gather_indices_i[ig] = ir
+              #print('g=', g_i)
+              #print('r=', r_i)
+              #print(gather_indices_i)
+              gather_indices.append(gather_indices_i)
+          
+          gather_indices = numpy.asarray(gather_indices)
+          loss, _ = self.sess.run([self.loss, g_optim], feed_dict={
+              self.gather_indices:gather_indices,
+              self.inputs:batch_images,
+              self.z: batch_z,
+              self.y: batch_labels,
+              self.random_proj:random_proj
+              })
+          average_loss += loss
+          loss_count += 1
+          print('average_loss=%f' % (average_loss/float(loss_count)))
+          
 
           # Update G network
-          _, summary_str = self.sess.run([g_optim, self.g_sum],
-            feed_dict={
-              self.z: batch_z, 
-              self.y:batch_labels,
-            })
-          self.writer.add_summary(summary_str, counter)
+          #_, summary_str = self.sess.run([g_optim, self.g_sum],
+          #  feed_dict={
+          #    self.z: batch_z, 
+          #    self.y:batch_labels,
+          #  })
+          #self.writer.add_summary(summary_str, counter)
 
-          # Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
-          _, summary_str = self.sess.run([g_optim, self.g_sum],
-            feed_dict={ self.z: batch_z, self.y:batch_labels })
-          self.writer.add_summary(summary_str, counter)
-          
-          errD_fake = self.d_loss_fake.eval({
-              self.z: batch_z, 
-              self.y:batch_labels
-          })
-          errD_real = self.d_loss_real.eval({
-              self.inputs: batch_images,
-              self.y:batch_labels
-          })
-          errG = self.g_loss.eval({
-              self.z: batch_z,
-              self.y: batch_labels
-          })
+          ## Run g_optim twice to make sure that d_loss does not go to zero (different from paper)
+          #_, summary_str = self.sess.run([g_optim, self.g_sum],
+          #  feed_dict={ self.z: batch_z, self.y:batch_labels })
+          #self.writer.add_summary(summary_str, counter)
+          #
+          #errD_fake = self.d_loss_fake.eval({
+          #    self.z: batch_z, 
+          #    self.y:batch_labels
+          #})
+          #errD_real = self.d_loss_real.eval({
+          #    self.inputs: batch_images,
+          #    self.y:batch_labels
+          #})
+          #errG = self.g_loss.eval({
+          #    self.z: batch_z,
+          #    self.y: batch_labels
+          #})
         else:
           # Update D network
           _, summary_str = self.sess.run([d_optim, self.d_sum],
@@ -279,14 +347,14 @@ class DCGAN(object):
           errG = self.g_loss.eval({self.z: batch_z})
 
         counter += 1
-        print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
-          % (epoch, idx, batch_idxs,
-            time.time() - start_time, errD_fake+errD_real, errG))
+        #print("Epoch: [%2d] [%4d/%4d] time: %4.4f, d_loss: %.8f, g_loss: %.8f" \
+        #  % (epoch, idx, batch_idxs,
+        #    time.time() - start_time, errD_fake+errD_real, errG))
 
-        if np.mod(counter, 100) == 1:
+        if np.mod(counter, 100) == 0:
           if config.dataset == 'mnist':
-            samples, d_loss, g_loss = self.sess.run(
-              [self.sampler, self.d_loss, self.g_loss],
+            samples = self.sess.run(
+              self.sampler,
               feed_dict={
                   self.z: sample_z,
                   self.inputs: sample_inputs,
@@ -294,8 +362,10 @@ class DCGAN(object):
               }
             )
             save_images(samples, [8, 8],
-                  './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
-            print("[Sample] d_loss: %.8f, g_loss: %.8f" % (d_loss, g_loss)) 
+                    './{}/train_{:02d}_{:04d}.png'.format(config.sample_dir, epoch, idx))
+            #print("[Sample] loss: %.8f" % (average_loss/float(loss_count))) 
+            loss_count = 0
+            average_loss = 0.0
           else:
             try:
               samples, d_loss, g_loss = self.sess.run(
@@ -311,39 +381,39 @@ class DCGAN(object):
             except:
               print("one pic error!...")
 
-        if np.mod(counter, 500) == 2:
-          self.save(config.checkpoint_dir, counter)
+        #if np.mod(counter, 500) == 2:
+        #  self.save(config.checkpoint_dir, counter)
 
-  def discriminator(self, image, y=None, reuse=False):
-    with tf.variable_scope("discriminator") as scope:
-      if reuse:
-        scope.reuse_variables()
+  #def discriminator(self, image, y=None, reuse=False):
+  #  with tf.variable_scope("discriminator") as scope:
+  #    if reuse:
+  #      scope.reuse_variables()
 
-      if not self.y_dim:
-        h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
-        h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim*2, name='d_h1_conv')))
-        h2 = lrelu(self.d_bn2(conv2d(h1, self.df_dim*4, name='d_h2_conv')))
-        h3 = lrelu(self.d_bn3(conv2d(h2, self.df_dim*8, name='d_h3_conv')))
-        h4 = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'd_h3_lin')
+  #    if not self.y_dim:
+  #      h0 = lrelu(conv2d(image, self.df_dim, name='d_h0_conv'))
+  #      h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim*2, name='d_h1_conv')))
+  #      h2 = lrelu(self.d_bn2(conv2d(h1, self.df_dim*4, name='d_h2_conv')))
+  #      h3 = lrelu(self.d_bn3(conv2d(h2, self.df_dim*8, name='d_h3_conv')))
+  #      h4 = linear(tf.reshape(h3, [self.batch_size, -1]), 1, 'd_h3_lin')
 
-        return tf.nn.sigmoid(h4), h4
-      else:
-        yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
-        x = conv_cond_concat(image, yb)
+  #      return tf.nn.sigmoid(h4), h4
+  #    else:
+  #      yb = tf.reshape(y, [self.batch_size, 1, 1, self.y_dim])
+  #      x = conv_cond_concat(image, yb)
 
-        h0 = lrelu(conv2d(x, self.c_dim + self.y_dim, name='d_h0_conv'))
-        h0 = conv_cond_concat(h0, yb)
+  #      h0 = lrelu(conv2d(x, self.c_dim + self.y_dim, name='d_h0_conv'))
+  #      h0 = conv_cond_concat(h0, yb)
 
-        h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim + self.y_dim, name='d_h1_conv')))
-        h1 = tf.reshape(h1, [self.batch_size, -1])      
-        h1 = concat([h1, y], 1)
-        
-        h2 = lrelu(self.d_bn2(linear(h1, self.dfc_dim, 'd_h2_lin')))
-        h2 = concat([h2, y], 1)
+  #      h1 = lrelu(self.d_bn1(conv2d(h0, self.df_dim + self.y_dim, name='d_h1_conv')))
+  #      h1 = tf.reshape(h1, [self.batch_size, -1])      
+  #      h1 = concat([h1, y], 1)
+  #      
+  #      h2 = lrelu(self.d_bn2(linear(h1, self.dfc_dim, 'd_h2_lin')))
+  #      h2 = concat([h2, y], 1)
 
-        h3 = linear(h2, 1, 'd_h3_lin')
-        
-        return tf.nn.sigmoid(h3), h3
+  #      h3 = linear(h2, 1, 'd_h3_lin')
+  #      
+  #      return tf.nn.sigmoid(h3), h3
 
   def generator(self, z, y=None):
     with tf.variable_scope("generator") as scope:
